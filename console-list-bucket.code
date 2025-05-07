@@ -1,0 +1,196 @@
+(async () => {
+    const xmlText = await (await fetch(location.href)).text();
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(xmlText, "application/xml");
+    const contents = xmlDoc.getElementsByTagName("Contents");
+    const baseUrl = (location.origin + location.pathname).replace(/\/?$/, '/');
+
+    const tree = {};
+    const extMap = {};
+    const noExtFiles = [];
+
+    function getExtension(key) {
+        const parts = key.split('/');
+        const last = parts[parts.length - 1];
+        const split = last.split('.');
+        return split.length > 1 ? split.slice(1).join('.').toLowerCase() : '';
+    }
+
+    for (let i = 0; i < contents.length; i++) {
+        const key = contents[i].getElementsByTagName("Key")[0].textContent;
+        if (!key || /^\d+$/.test(key.trim())) continue;
+
+        const parts = key.split('/');
+        let current = tree;
+
+        for (let j = 0; j < parts.length; j++) {
+            const part = parts[j];
+            if (j === parts.length - 1) {
+                current[part] = key;
+                const ext = getExtension(key);
+                if (ext) {
+                    extMap[ext] = extMap[ext] || [];
+                    extMap[ext].push(key);
+                } else {
+                    noExtFiles.push(key);
+                }
+            } else {
+                current[part] = current[part] || {};
+                current = current[part];
+            }
+        }
+    }
+
+    function gerarHTML(obj, caminhoAtual = '') {
+        let html = '<ul>';
+        for (const nome in obj) {
+            const valor = obj[nome];
+            if (typeof valor === 'string') {
+                const fullUrl = baseUrl + encodeURIComponent(valor).replace(/%2F/g, '/');
+                const ext = getExtension(valor);
+                html += `<li><input type="checkbox" class="select-file" data-path="${fullUrl}" data-ext="${ext}" data-key="${valor}" onclick="marcarSelecionados(this)"> <a href="${fullUrl}" target="_blank">${nome}</a></li>`;
+            } else {
+                const pastaPath = caminhoAtual + nome + '/';
+                html += `
+                    <li>
+                        <details>
+                            <summary>
+                                <input type="checkbox" class="select-folder" onclick="selecionarTodos('${pastaPath}', this)">
+                                ${nome}/
+                            </summary>
+                            ${gerarHTML(valor, pastaPath)}
+                        </details>
+                    </li>`;
+            }
+        }
+        html += '</ul>';
+        return html;
+    }
+
+    const newWindow = window.open('', '_blank');
+
+    const filtrosHTML = Object.entries(extMap)
+        .sort((a, b) => b[1].length - a[1].length)
+        .map(([ext, lista]) =>
+            `<label><input type="checkbox" class="ext-filter" value="${ext}" onchange="filtrarPorExtensao('${ext}', this.checked)"> .${ext} (${lista.length})</label>`
+        ).join('');
+
+    const arquivosHTML = gerarHTML(tree);
+
+    const noExtHTML = noExtFiles.length > 0 ? `
+        <ul>
+            ${noExtFiles.map(file => `
+                <li><input type="checkbox" class="select-noext" data-path="${baseUrl + encodeURIComponent(file)}" data-key="${file}" onclick="marcarSelecionados(this)"> ${file}</li>
+            `).join('')}
+        </ul>
+    ` : '<p>Nenhum arquivo sem extensão encontrado.</p>';
+
+    const style = `
+        <style>
+            body { font-family: sans-serif; padding: 20px; }
+            ul { list-style-type: none; padding-left: 20px; }
+            summary { cursor: pointer; font-weight: bold; }
+            a { text-decoration: none; color: #0645AD; }
+            a:hover { text-decoration: underline; }
+            button { margin: 10px 5px 10px 0; padding: 8px 12px; cursor: pointer; }
+            #top { display: flex; flex-direction: row; gap: 40px; margin-bottom: 20px; align-items: flex-start; }
+            #top > div { width: 50%; }
+            #filtros label { display: block; margin-bottom: 5px; white-space: nowrap; }
+            #lista { margin-top: 20px; }
+            #opcoes-copia { margin-bottom: 15px; }
+        </style>
+    `;
+
+    const script = `
+        <script>
+            let lastChecked = null;
+
+            function expandirTudo() {
+                document.querySelectorAll("details").forEach(d => d.open = true);
+            }
+
+            function selecionarTodos(pasta, checkbox) {
+                setTimeout(() => {
+                    const checkboxes = document.querySelectorAll(\`.select-file[data-key^="\${pasta}"]\`);
+                    checkboxes.forEach(cb => cb.checked = checkbox.checked);
+                }, 100);
+            }
+
+            function copiarSelecionados() {
+                expandirTudo();
+                setTimeout(() => {
+                    const selecionados = document.querySelectorAll('.select-file:checked, .select-noext:checked');
+                    const modo = document.querySelector('input[name="copyOption"]:checked')?.value || 'url';
+
+                    const links = Array.from(selecionados).map(cb => {
+                        const url = cb.getAttribute('data-path');
+                        const key = cb.getAttribute('data-key');
+                        if (modo === 'url') return url;
+                        return key.startsWith('/') ? key : '/' + key;
+                    });
+
+                    if (links.length) {
+                        navigator.clipboard.writeText(links.join("\\n"))
+                            .then(() => alert("Copiado com sucesso!"))
+                            .catch(err => alert("Erro ao copiar: " + err));
+                    } else {
+                        alert("Nenhum arquivo selecionado.");
+                    }
+                }, 100);
+            }
+
+            function selecionarTodosArquivos(marcar) {
+                document.querySelectorAll('.select-file, .select-noext').forEach(cb => cb.checked = marcar);
+            }
+
+            function filtrarPorExtensao(ext, estado) {
+                document.querySelectorAll('.select-file[data-ext="' + ext + '"]').forEach(cb => cb.checked = estado);
+            }
+
+            function marcarSelecionados(checkbox) {
+                if (event.shiftKey && lastChecked) {
+                    const checkboxes = document.querySelectorAll('.select-file, .select-noext');
+                    let inRange = false;
+                    checkboxes.forEach(cb => {
+                        if (cb === checkbox || cb === lastChecked) inRange = !inRange;
+                        if (inRange) cb.checked = checkbox.checked;
+                    });
+                }
+                lastChecked = checkbox;
+            }
+        </script>
+    `;
+
+    const htmlCompleto = `
+        <html>
+        <head><title>List Bucket S3 - by Guax1</title>${style}</head>
+        <body>
+			<p style="font-weight: bold; font-size: 16px;">Criado por <s>chatgpt</s> Guax1</p>
+
+            <div id="opcoes-copia">
+                <label><input type="radio" name="copyOption" value="url" checked> Copiar URL completa ( <b>https://url/dir/file</b> )</label>
+                <label><input type="radio" name="copyOption" value="path"> Copiar caminho interno ( <b>/dir/file</b> )</label>
+            </div>
+            <button onclick="copiarSelecionados()">📋 Copiar selecionados</button>
+            <button onclick="selecionarTodosArquivos(true)">✅ Selecionar todos</button>
+            <button onclick="selecionarTodosArquivos(false)">❌ Desmarcar todos</button>
+            <div id="top">
+                <div>
+                    <h3>Arquivos encontrados</h3>
+                    ${arquivosHTML}
+                    <h3>Arquivos sem extensão</h3>
+                    ${noExtHTML}
+                </div>
+                <div id="filtros">
+                    <h3>Filtrar por extensão</h3>
+                    ${filtrosHTML}
+                </div>
+            </div>
+            ${script}
+        </body>
+        </html>
+    `;
+
+    newWindow.document.write(htmlCompleto);
+    newWindow.document.close();
+})();
